@@ -1,0 +1,591 @@
+---
+title: "BDA 640 Final Project"
+author: "Sajjiynie Suraweera and Abhishek Gundala"
+date: "2024-02-29"
+output:
+  html_document:
+    css: styles.css
+    code_folding: show
+    anchor_sections: true
+    toc: true
+
+---
+```{css, echo=FALSE}
+body {
+  background-color: #10101010; 
+  color: #333333; 
+}
+.fold-show::before {
+  content: 'Show Code';
+}
+.fold-hide::before {
+  content: 'Hide Code';
+}
+
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(pROC)
+library(glmnet)
+library(rpart)
+library(caret)
+library(randomForest)
+library(car)
+library(glm2)
+
+```
+
+
+#Loading the data
+
+```{r}
+OUData <- read.csv("OUData.csv")
+
+head(OUData)
+
+str(OUData)
+
+summary(OUData)
+```
+
+#Necessary Variable transformations & Missing values
+
+```{r}
+factor_columns <- c("Gender", "PrimaryInsuranceCategory", "InitPatientClassAndFirstPostOUClass", "DRG01")
+OUData[factor_columns] <- lapply(OUData[factor_columns], as.factor)
+
+
+numeric_columns <- c("Age", "Flipped", "OU_LOS_hrs", "BloodPressureUpper", "BloodPressureLower", "BloodPressureDiff", "Pulse", "PulseOximetry", "Respirations", "Temperature")
+OUData[numeric_columns] <- lapply(OUData[numeric_columns], function(x) as.numeric(as.character(x)))
+OUData <- na.omit(OUData)
+
+OUData <- OUData[OUData$BloodPressureLower != 0, ]
+
+head(OUData)
+
+missing_values <- sapply(OUData, function(x) sum(is.na(x)))
+print(missing_values)
+```
+
+
+#Variable Significance, Data Partition and Decision Tree
+
+```{r}
+
+
+set.seed(123)  
+
+target <- "Flipped"
+
+# Remove the "ObservationRecordKey" and "InitPatientClassAndFirstPostOUClass" columns
+OUData <- OUData[, !(names(OUData) %in% c("ObservationRecordKey", "InitPatientClassAndFirstPostOUClass"))]
+
+# Data partition
+inTrain <- createDataPartition(y = OUData[[target]], p = 0.75, list = FALSE)
+
+# Split data into training and testing sets
+trainData <- OUData[inTrain, ]
+testData <- OUData[-inTrain, ]
+
+# Ensure the target variable is a factor with consistent levels across both sets
+trainData[[target]] <- factor(trainData[[target]])
+testData[[target]] <- factor(testData[[target]], levels = levels(trainData[[target]]))
+
+formula <- as.formula(paste0(target, " ~ ."))
+
+# Decision tree model
+dt <- rpart(formula, data = trainData, method = "class", cp = 0.01)
+
+# Predict on the test set with type "class" for classification
+predictions <- predict(dt, testData, type = "class")
+
+# Ensure predictions are a factor with the same levels as the testData target variable
+predictions <- factor(predictions, levels = levels(testData[[target]]))
+
+# Create confusion matrix
+confusionMatrix <- confusionMatrix(predictions, testData[[target]])
+
+print(confusionMatrix)
+
+
+
+```
+
+#Model Interpretation and Evaluation:
+The performance of the model was evaluated using a confusion matrix and several statistical measures:
+
+Accuracy (76.64%) indicates that the model correctly predicted the class of an instance 76.64% of the time across the test dataset. While this is significantly better than randomly guessing based on class distribution (No Information Rate of 55.84%), it also suggests there is room for improvement, as approximately 23% of predictions were incorrect.
+Kappa (0.5231) suggests a moderate agreement between the model's predictions and the actual values, correcting for chance. This further indicates that the model has learned to classify instances better than random guessing.
+Sensitivity (81.70%) and Specificity (70.25%) show the model's ability to correctly identify positive and negative instances, respectively. High sensitivity means the model is good at catching positive cases, but the slightly lower specificity suggests it also misclassifies some negative cases as positive.
+Positive Predictive Value (77.64%) and Negative Predictive Value (75.22%) reflect the precision of positive predictions and the precision of negative predictions, respectively. These values indicate the reliability of the model's predictions in each class.
+Balanced Accuracy (75.97%) provides a single metric considering both sensitivity and specificity, useful especially in cases where the dataset might be imbalanced. This suggests that the model performs fairly well across both classes.
+#Overall Evaluation:
+The decision tree model demonstrates a good ability to classify instances correctly, significantly better than a baseline model that would predict the most frequent class. Its strength lies in its high sensitivity, though improvements could be made to specificity to reduce the number of false positives. The model's balanced accuracy and Kappa statistic indicate a solid performance that could be further enhanced with model tuning, feature engineering, or by considering alternative modeling approaches.
+
+
+#2 Decision Tree for analysis purposes
+
+```{r}
+
+# Updated refined formula with all the variables
+refined_formula <- as.formula("Flipped ~ Age + Gender + PrimaryInsuranceCategory + OU_LOS_hrs + DRG01 + BloodPressureUpper + BloodPressureLower + BloodPressureDiff + Pulse + PulseOximetry + Respirations + Temperature")
+
+# Refined decision tree model
+refined_dt <- rpart(refined_formula, data = trainData, method = "class", cp = 0.01)
+
+# Print summary of the refined decision tree model
+print(summary(refined_dt))
+
+# Predict on the test set with type "prob" for probabilities
+refined_predictions_prob <- predict(refined_dt, testData, type = "prob")
+
+# Convert predicted probabilities to binary predictions based on the probability of being in class "1"
+refined_predictions_binary <- ifelse(refined_predictions_prob[, "1"] > 0.5, 1, 0)
+
+# Ensure testData$Flipped is a factor with correct levels
+testData$Flipped <- factor(testData$Flipped, levels = levels(trainData$Flipped))
+
+# Evaluate model performance using confusion matrix
+conf_matrix_table_refined <- table(Actual = testData$Flipped, Predicted = as.factor(refined_predictions_binary))
+
+# Print the confusion matrix
+print(conf_matrix_table_refined)
+
+```
+
+
+
+```{r}
+# Create the decision tree model with a different cp value
+dt_alternative <- rpart(refined_formula, data = trainData, cp = 0.05)
+
+# Print the model summary for the alternative model
+print(summary(dt_alternative))
+
+```
+
+#Cross Validation
+
+```{r}
+#  using caret's train function with cross-validation
+ctrl <- trainControl(method = "cv", number = 5)
+model <- train(refined_formula, data = trainData, method = "rpart", trControl = ctrl)
+print(model)
+
+```
+
+
+
+```{r}
+trainData$Flipped <- as.factor(trainData$Flipped)
+testData$Flipped <- as.factor(testData$Flipped)
+
+# Update the formula to include all features
+updated_formula <- as.formula(paste0("Flipped ~ OU_LOS_hrs + DRG01 + PrimaryInsuranceCategory + BloodPressureUpper + BloodPressureLower + BloodPressureDiff + Pulse + PulseOximetry + Respirations + Temperature"))
+model_updated <- train(updated_formula, data = trainData, method = "rpart", trControl = ctrl)
+print(model_updated)
+
+```
+```{r}
+# Predict on the test set
+predictions_test <- predict(model_updated, newdata = testData)
+
+# Evaluate model performance
+confusion_matrix <- confusionMatrix(testData$Flipped, predictions_test)
+print(confusion_matrix)
+
+
+
+```
+
+
+#Logistic Regression
+
+```{r}
+
+
+
+# Define the formula for the model
+formula <- as.formula(paste0(target, " ~ ."))
+
+# Create the logistic regression model
+logistic_model <- glm(formula, data = trainData, family = "binomial")
+
+# Print the model summary
+summary(logistic_model)
+
+# Predict on the test set
+predictions_prob <- predict(logistic_model, testData, type = "response")
+
+# Convert predicted probabilities to binary predictions
+predictions <- ifelse(predictions_prob > 0.5, "1", "0")
+
+# Create confusion matrix using the table function
+confusion_matrix <- table(Actual = testData$Flipped, Predicted = predictions)
+
+# Print the confusion matrix as a table
+print(confusion_matrix)
+
+
+# Use the confusionMatrix function from the caret package
+conf_matrix <- confusionMatrix(as.factor(predictions), as.factor(testData$Flipped))
+
+# Print the confusion matrix along with additional metrics
+print(conf_matrix)
+
+
+
+```
+
+#Results Explanation:
+The summary of the logistic regression model provides detailed insights:
+
+Coefficients (Estimates): These values indicate the change in the log odds of the outcome for a one-unit increase in the predictor variable, holding all other variables constant. For instance, Age has a coefficient of -0.0061247, suggesting a slight decrease in the log odds of "Flipped" being 1 for each additional year of age.
+Significance Codes: Asterisks next to the coefficients indicate their significance levels, with more asterisks denoting higher significance. Variables like OU_LOS_hrs and several DRG01 codes have significant p-values, suggesting a strong relationship with the outcome.
+Model Deviance: The null deviance and residual deviance show how well the model fits the data compared to a null model (a model with only an intercept). The lower residual deviance compared to the null deviance indicates the model with predictors fits the data better than the null model.
+The confusion matrix for the test data shows:
+
+True Negatives (TN): 133 instances were correctly predicted as not flipped.
+False Positives (FP): 20 instances were incorrectly predicted as flipped.
+False Negatives (FN): 42 instances that flipped were not identified by the model.
+True Positives (TP): 79 instances were correctly predicted as flipped.
+
+#Simple Interpretation:
+The logistic regression model looks at several factors like age, gender, insurance category, duration of stay (OU_LOS_hrs), diagnosis codes (DRG01), and various health metrics to predict whether a patient's status will flip to a specific condition.
+Variables with significant p-values, especially OU_LOS_hrs, play a crucial role in predicting the outcome. For example, longer stays in the hospital increase the likelihood of flipping.
+The confusion matrix indicates that the model is relatively good at predicting both outcomes but has room for improvement, especially in reducing false negatives and false positives to enhance accuracy.
+
+
+
+
+
+```{r}
+
+
+X <- model.matrix(logistic_model)
+
+# Calculate VIF
+vif_values <- car::vif(logistic_model)
+
+# Display VIF values
+print(vif_values)
+```
+
+
+#Simplified Interpretation of Results:
+No Severe Multicollinearity: All the variables have adjusted GVIF values close to 1, suggesting that there is no severe multicollinearity among the predictors. This means the regression coefficients for these predictors can be reliably estimated without substantial interference from multicollinearity.
+PrimaryInsuranceCategory and DRG01: Although these have higher degrees of freedom due to being categorical with multiple categories, their adjusted GVIF values remain low, indicating that even with multiple categories, they do not introduce problematic multicollinearity.
+Overall: The logistic regression model's predictors are relatively independent of each other, which is good for the reliability of the model's coefficients. The model should provide stable estimates of the effect of each predictor on the probability of the outcome variable "Flipped"
+
+
+
+```{r}
+
+formula <- as.formula("Flipped ~ Age * OU_LOS_hrs")
+
+# Fit the logistic regression model
+logreg_model <- glm(formula, family = "binomial", data = trainData)
+
+# Print the summary
+summary(logreg_model)
+
+
+```
+
+#Coefficients (Estimates):
+(Intercept): The model’s intercept, -4.1606184, represents the log odds of "Flipped" being 1 when all predictors are 0. Given the nature of the variables, this is more of a theoretical value than a practical one.
+Age: The coefficient for "Age", 0.0320429, suggests that for each additional year of age, the log odds of flipping increase, holding the length of stay constant.
+OU_LOS_hrs: The coefficient, 0.0862807, indicates that for each additional hour of stay, the log odds of flipping increase, holding age constant.
+Age:OU_LOS_hrs: The interaction term has a coefficient of -0.0007686, indicating that the effect of age on the odds of flipping changes with the length of stay, and vice versa. Specifically, the positive influence of both "Age" and "OU_LOS_hrs" on the likelihood of flipping is slightly reduced when considering their interaction.
+Statistical Significance: The p-values (Pr(>|z|)) associated with each coefficient determine their statistical significance. All predictors, including the interaction term, have p-values well below 0.05, indicating that they are statistically significant predictors of the outcome
+
+
+#Further Analysis
+
+```{r}
+# Check the correlation matrix
+cor(trainData[c("Age", "OU_LOS_hrs")])
+
+
+```
+
+
+
+```{r}
+#  formula without interaction
+formula <- as.formula("Flipped ~ Age + OU_LOS_hrs")
+
+# Fit the logistic regression model
+logreg_model1 <- glm(formula, family = "binomial", data = trainData)
+
+summary(logreg_model1)
+
+```
+
+
+```{r}
+
+
+X <- model.matrix(logreg_model1)
+
+# Calculate VIF
+vif_values <- car::vif(logreg_model1)
+
+# Display VIF values
+print(vif_values)
+
+```
+
+
+#ROC Curve
+
+```{r}
+
+# Predict on the test set using our logistic regression model
+predictions_prob <- predict(logreg_model, newdata = testData, type = "response")
+
+# Create ROC curve using the pROC package
+roc_curve <- roc(testData$Flipped, predictions_prob)
+
+# Plot ROC curve with customizations
+plot(roc_curve, main = "ROC Curve for Logistic Regression Model",
+     col = "blue", # Color of the ROC curve
+     lwd = 2, # Line width
+     xlab = "False Positive Rate", # X-axis label
+     ylab = "True Positive Rate", # Y-axis label
+     print.auc = TRUE, # Print the AUC on the plot
+     print.auc.x = 0.4, # X location of AUC value on the plot
+     print.auc.y = 0.2, # Y location of AUC value on the plot
+     print.auc.col = "red" # Color of the AUC value text
+)
+
+```
+
+#Random Forest
+
+
+
+```{r warning=FALSE}
+
+formula <- as.formula("Flipped ~ Age + OU_LOS_hrs + Gender + DRG01 + BloodPressureUpper + BloodPressureLower + BloodPressureDiff + Pulse + PulseOximetry + Respirations + Temperature + PrimaryInsuranceCategory")
+
+# Random Forest model
+rf_model <- randomForest(formula, data = trainData, ntree = 500, importance = TRUE)
+
+# Print the model summary
+print(rf_model)
+
+# Predictions on the test set
+predictions <- predict(rf_model, newdata = testData, type = "response")
+
+
+# Convert predictions to numeric binary format if they are not already
+predictions_binary <- as.numeric(predictions) - 1  # Adjust based on our factor levels if necessary
+
+# Create a confusion matrix to evaluate model performance
+confusion_matrix <- table(Actual = testData$Flipped, Predicted = predictions_binary)
+print(confusion_matrix)
+
+# For extended evaluation metrics, load the caret package
+library(caret)
+
+# Use the confusionMatrix function from the caret package
+conf_matrix <- confusionMatrix(as.factor(predictions_binary), as.factor(testData$Flipped))
+
+# Print the confusion matrix along with additional metrics
+print(conf_matrix)
+
+
+
+```
+
+#Model Performance Evaluation:
+Out-of-Bag (OOB) Error Rate: An estimate of the error rate is provided, calculated using out-of-bag samples (25.09%). OOB error is a method of measuring prediction error in random forests, where each tree is tested on the data not used in its training (OOB data).
+Confusion Matrix for Training Data: Shows the number of correct and incorrect predictions made by the model on the training data. It indicates how many instances of each actual class (0 or 1) were predicted correctly or incorrectly. The class error rates are similar for both classes, around 25%.
+
+
+
+#Variable Importance
+
+
+```{r}
+
+# Check variable importance
+importance <- importance(rf_model)
+
+# Print the variable importance
+print(importance)
+
+# Plotting variable importance
+varImpPlot(rf_model)
+
+```
+
+#Analysis
+
+```{r}
+
+# Simplified formula based on significance and potential relevance
+simplified_formula <- as.formula("Flipped ~ OU_LOS_hrs + Gender + PrimaryInsuranceCategory")
+
+# Fit the logistic regression model with the simplified formula
+simplified_logreg_model <- glm(simplified_formula, data = trainData, family = "binomial")
+
+# Print the summary of the simplified model
+summary(simplified_logreg_model)
+
+
+# Predict on the test set with the simplified model
+predictions_prob_simplified <- predict(simplified_logreg_model, newdata = testData, type = "response")
+
+# Convert predicted probabilities to binary predictions
+predictions_simplified <- ifelse(predictions_prob_simplified > 0.5, 1, 0)
+
+# Create a confusion matrix to evaluate model performance
+confusion_matrix_simplified <- table(Actual = testData$Flipped, Predicted = predictions_simplified)
+print(confusion_matrix_simplified)
+
+# Use the confusionMatrix function from the caret package for the simplified model predictions
+conf_matrix_simplified <- confusionMatrix(as.factor(predictions_simplified), as.factor(testData$Flipped))
+
+# Print the confusion matrix along with additional metrics for the simplified model
+print(conf_matrix_simplified)
+
+
+```
+
+
+
+
+#Model Coefficients:
+(Intercept): The model's intercept, -1.679213, represents the log odds of the outcome being 1 (Flipped) when all predictor variables are at their reference levels (in this case, when OU_LOS_hrs is 0, Gender is not male, and the Primary Insurance Category is the omitted reference category, likely "MEDICAID OTHER" or similar).
+OU_LOS_hrs: The coefficient of 0.028666 suggests that for each additional hour of stay, the log odds of flipping increase, holding other variables constant. This variable is highly significant (< 2e-16), indicating a strong and statistically significant relationship with the outcome.
+GenderMale: The coefficient of 0.118581 for male gender, compared to the reference category (likely female), is not statistically significant (p = 0.4743), suggesting that gender may not have a strong influence on the likelihood of flipping in this model.
+PrimaryInsuranceCategory: Among the insurance categories, only "MEDICARE OTHER" shows a statistically significant effect (p = 0.0371) with a coefficient of -0.610659, indicating that having this insurance category decreases the log odds of flipping compared to the reference insurance category. Other insurance categories do not show statistically significant effects.
+Model Fit:
+Null Deviance vs. Residual Deviance: The decrease from the null deviance (1140.29) to the residual deviance (898.37) indicates that the model with predictors fits the data significantly better than a model with only the intercept.
+AIC (Akaike Information Criterion): The AIC value of 912.37 provides a measure of the model's quality, considering both the goodness of fit and the number of predictors used. Lower AIC values are generally better, but AIC is most useful when comparing different models.
+Confusion Matrix:
+The confusion matrix shows how the model's predictions compare to the actual outcomes in the test data. It indicates that:
+True Negatives (TN): 134 instances were correctly predicted as not flipped (0).
+False Positives (FP): 19 instances were incorrectly predicted as flipped (1).
+False Negatives (FN): 47 instances that did flip were incorrectly predicted as not flipped (0).
+True Positives (TP): 74 instances were correctly predicted as flipped (1).
+Interpretation in Simple Words:
+This logistic regression model tries to predict whether certain conditions will flip based on how long someone stays (measured in hours), their gender, and what kind of primary insurance they have. The results show that:
+
+The longer someone stays, the more likely their condition will flip, which is a strong and clear finding from this model.
+Whether someone is male or not doesn't seem to make a significant difference to the model's predictions.
+Among the insurance categories, only the "MEDICARE OTHER" category significantly affects the likelihood of flipping, and it decreases this likelihood compared to the baseline insurance category.
+The model is reasonably good at identifying instances that won't flip but has room for improvement, especially in correctly identifying instances that will flip, as seen in the confusion matrix.
+
+
+
+
+
+```{r}
+
+
+# Calculate AUC
+roc_obj <- roc(response = testData$Flipped, predictor = predictions_prob)
+auc_value <- auc(roc_obj)
+cat("AUC: ", auc_value, "\n")
+
+confusion_matrix <- table(Actual = testData$Flipped, Predicted = predictions)
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+cat("Accuracy: ", accuracy, "\n")
+
+```
+
+#Models and comparison of accuracies
+
+
+
+```{r}
+# Function to calculate accuracy and generate confusion matrix
+calculate_metrics <- function(model, testData) {
+  # Determine the model type
+  model_type <- class(model)[1]
+  
+  # For logistic regression and similar models that output probabilities
+  if (model_type %in% c("glm", "lm")) {
+    predictions_prob <- predict(model, newdata = testData, type = "response")
+    predictions <- ifelse(predictions_prob > 0.5, "1", "0")
+  } else { # For models like randomForest and decision trees that directly give class predictions
+    predictions <- as.character(predict(model, newdata = testData, type = "class"))
+  }
+  
+  confusion_matrix <- table(Actual = testData$Flipped, Predicted = predictions)
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  
+  return(list("Accuracy" = accuracy, "Confusion Matrix" = confusion_matrix))
+}
+
+
+metrics_logreg <- calculate_metrics(logistic_model, testData)
+metrics_rf <- calculate_metrics(rf_model, testData)
+metrics_simplified_logreg <- calculate_metrics(simplified_logreg_model, testData)
+metrics_dt <- calculate_metrics(dt, testData) 
+
+# Updating the models and their corresponding metrics
+models <- c("Logistic Regression", "Random Forest", "Simplified Logistic Regression", "Decision Tree")
+accuracies <- c(metrics_logreg$Accuracy, metrics_rf$Accuracy, metrics_simplified_logreg$Accuracy, metrics_dt$Accuracy)
+conf_matrices <- list(metrics_logreg$`Confusion Matrix`, metrics_rf$`Confusion Matrix`, metrics_simplified_logreg$`Confusion Matrix`, metrics_dt$`Confusion Matrix`)
+
+# Print Accuracies
+cat("## Model Accuracies\n")
+for (i in 1:length(models)) {
+  cat("- **", models[i], "**: ", round(accuracies[i] * 100, 2), "%\n", sep="")
+}
+
+# Print Confusion Matrices
+cat("\n## Confusion Matrices\n")
+for (i in 1:length(models)) {
+  cat("### ", models[i], "\n")
+  print(conf_matrices[[i]])
+  cat("\n")
+}
+
+```
+
+
+
+#Model Averages prediction
+
+
+```{r}
+calculate_avg_los <- function(model, testData) {
+  # Determine model type and predict
+  if (class(model)[1] == "glm" || class(model)[1] == "lm") {
+    # For logistic regression, predict probabilities and convert to binary
+    predictions_prob <- predict(model, newdata = testData, type = "response")
+    predictions <- ifelse(predictions_prob > 0.5, 1, 0)
+  } else {
+    # For models like randomForest that directly give class predictions
+    predictions <- as.numeric(predict(model, newdata = testData, type = "class"))
+  }
+
+  # Calculate average OU_LOS_hrs for Flipped = 1
+  avg_los_flipped_1 <- mean(testData$OU_LOS_hrs[predictions == 1], na.rm = TRUE)
+
+  return(avg_los_flipped_1)
+}
+
+# Calculating average OU_LOS_hrs for Flipped = 1 for each model
+avg_los_logreg <- calculate_avg_los(logreg_model, testData)
+avg_los_rf <- calculate_avg_los(rf_model, testData)
+avg_los_simplified_logreg <- calculate_avg_los(simplified_logreg_model, testData)
+avg_los_dt <- calculate_avg_los(dt, testData)
+
+# Print average OU_LOS_hrs for Flipped = 1 for each model
+cat("## Average OU_LOS_hrs for Flipped = 1\n")
+cat("- **Logistic Regression**: ", avg_los_logreg, "hrs\n")
+cat("- **Random Forest**: ", avg_los_rf, "hrs\n")
+cat("- **Simplified Logistic Regression**: ", avg_los_simplified_logreg, "hrs\n")
+cat("- **Decision Tree**: ", avg_los_dt, "hrs\n")
+
+```
+
+
